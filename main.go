@@ -23,6 +23,8 @@ func main() {
 		doAnnotate()
 	case "status":
 		doStatus()
+	case "ignore":
+		fmt.Println("In the future, this will add elements to be ignored (rn I'll edit it with my editor.)")
 	default:
 		fmt.Println("Unknown command.")
 		os.Exit(1)
@@ -44,7 +46,13 @@ func doInit() {
 	err = os.WriteFile(".memc/tags", []byte(""), 0644)
 	if err != nil {
 		_ = os.RemoveAll(".memc") // for now, ignore this error, although it would be nice to notify the user
-		fail("Error creating new file", err)
+		fail("Error creating tag file:", err)
+	}
+
+	err = os.WriteFile(".memc/ignore", []byte(""), 0644)
+	if err != nil {
+		_ = os.RemoveAll(".memc")
+		fail("Error creating ignore file:", err)
 	}
 
 }
@@ -52,8 +60,9 @@ func doInit() {
 func doAnnotate() {
 	ensureInit()
 	tags := readTags()
+	ignore := readIgnore()
 	allFiles := candidateFiles()
-	untagged := filterAnnotated(allFiles, tags)
+	untagged := filterAnnotated(allFiles, tags, ignore)
 
 	for _, file := range untagged {
 		// setup image viewer
@@ -121,18 +130,43 @@ func doStatus() {
 	ensureInit()
 
 	tags := readTags()
+	ignore := readIgnore()
 	allFiles := candidateFiles()
 
-	untagged := filterAnnotated(allFiles, tags)
+	untagged := filterAnnotated(allFiles, tags, ignore)
 
-	fmt.Println(len(allFiles)-len(untagged), "/", len(allFiles))
+	// count overlap (kinda bad, but whatever)
+	numIgnored := 0
+	for _, elem := range allFiles {
+		if _, exists := ignore[elem]; exists {
+			numIgnored++
+		}
+	}
+
+	// count tags/ignore overlap (this is erroneous)
+	// simple error checking for the future
+	numIgnoreTagOverlap := 0
+	for elem := range tags {
+		if _, exists := ignore[elem]; exists {
+			numIgnoreTagOverlap++
+		}
+	}
+
+	fmt.Printf(" %d / %d (%d ignored)\n", len(allFiles)-len(untagged)-numIgnored, len(allFiles)-numIgnored, numIgnored)
+
+	if numIgnoreTagOverlap > 0 {
+		fmt.Printf("Also, there are %d elements that are both tagged and ignored????\n", numIgnoreTagOverlap)
+	}
+
 	fmt.Println(untagged)
 }
 
-func filterAnnotated(candidates []string, tags map[string][]string) []string {
+func filterAnnotated(candidates []string, tags map[string][]string, ignore Set) []string {
 	var untagged []string
 	for _, elem := range candidates {
-		if _, exists := tags[elem]; !exists {
+		_, isInTags := tags[elem]
+		_, isInIgnore := ignore[elem]
+		if !isInTags && !isInIgnore {
 			untagged = append(untagged, elem)
 		}
 	}
@@ -188,6 +222,26 @@ func readTags() map[string][]string {
 	}
 
 	return allTags
+}
+
+type Set map[string]struct{}
+
+func readIgnore() Set {
+	file, err := os.Open(".memc/ignore")
+	if err != nil {
+		fail("Error while opening ignore file for reading:", err)
+	}
+	defer file.Close()
+
+	ignore := make(Set)
+	scanner := bufio.NewScanner(file)
+
+	for scanner.Scan() {
+		s := strings.TrimSpace(scanner.Text())
+		ignore[s] = struct{}{} // add a sentinel value
+	}
+
+	return ignore
 }
 
 func ensureInit() {
