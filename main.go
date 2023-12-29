@@ -7,7 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
+
+	"github.com/agnivade/levenshtein"
 )
 
 func main() {
@@ -25,6 +28,8 @@ func main() {
 		doStatus()
 	case "ignore":
 		fmt.Println("In the future, this will add elements to be ignored (rn I'll edit it with my editor.)")
+	case "find": // this should also launch some sort of interactive mode where you can preview the maymays
+		doFind(args[1:])
 	default:
 		fmt.Println("Unknown command.")
 		os.Exit(1)
@@ -159,6 +164,45 @@ func doStatus() {
 	}
 
 	fmt.Println(untagged)
+}
+
+func doFind(searchTerms []string) {
+	ensureInit()
+
+	tags := readTags()
+
+	// slow, O(n^3) implementation
+	scores := []Candidate{}
+	for filename, description := range tags {
+		cumDistance := 0
+		for _, queryPart := range searchTerms {
+			minDistance := levenshtein.ComputeDistance(queryPart, filename)
+			for _, tag := range description {
+				distance := levenshtein.ComputeDistance(queryPart, tag)
+				minDistance = min(minDistance, distance)
+			}
+
+			cumDistance += minDistance
+		}
+
+		scores = append(scores, Candidate{filename, cumDistance})
+	}
+
+	// sort scores and return max 10 results
+	sort.Slice(scores, func(i, j int) bool {
+		return scores[i].difference < scores[j].difference
+	})
+
+	trim := min(10, len(scores))
+
+	for _, cand := range scores[:trim] {
+		fmt.Printf("%s: %d\n", cand.filename, cand.difference)
+	}
+}
+
+type Candidate struct {
+	filename   string
+	difference int
 }
 
 func filterAnnotated(candidates []string, tags map[string][]string, ignore Set) []string {
