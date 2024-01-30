@@ -1,12 +1,9 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
-	"io/fs"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -14,104 +11,102 @@ import (
 )
 
 func main() {
-	args := os.Args[1:]
-	if len(args) == 0 {
-		fail("Must specify a command.")
+	if len(os.Args) < 2 {
+		fail("Must specify a command. Type 'help'.")
 	}
 
-	switch args[0] {
+	switch os.Args[1] {
+	case "i":
 	case "init":
 		doInit()
+	case "a":
 	case "annotate":
 		doAnnotate()
+	case "s":
 	case "status":
 		doStatus()
+	case "g":
 	case "ignore":
-		fmt.Println("In the future, this will add elements to be ignored (rn I'll edit it with my editor.)")
+		doIgnore(os.Args[2:])
+	case "f":
 	case "find": // this should also launch some sort of interactive mode where you can preview the maymays
-		doFind(args[1:])
+		doFind(os.Args[2:])
 	default:
-		fmt.Println("Unknown command.")
-		os.Exit(1)
+		fail("Unknown command.")
 	}
 
 }
 
-func doInit() {
-	// variable reused for errors, because I don't feel like naming each error separately
-	var err error
+/* Constants */
+const (
+	DIRECTORY            = ".memc"
+	TAGS_FILE            = DIRECTORY + "/tags"
+	IGNORE_FILE          = DIRECTORY + "/ignore"
+	DEFAULT_EDITOR       = "vi"
+	DEFAULT_IMAGE_VIEWER = "feh"
+)
 
+/* Command line functions */
+// Initializes a new "image repository"
+func doInit() {
 	// create directory
-	err = os.Mkdir(".memc", 0755)
-	if err != nil {
-		fail("Error creating new directory:", err)
-	}
+	failWhen("Error creating new directory")(os.Mkdir(DIRECTORY, 0755))
 
 	// pre-create the file which will store all of the tags
-	err = os.WriteFile(".memc/tags", []byte(""), 0644)
-	if err != nil {
-		_ = os.RemoveAll(".memc") // for now, ignore this error, although it would be nice to notify the user
-		fail("Error creating tag file:", err)
-	}
+	failCleanupWhen("Error creating tag file")(func() { _ = os.RemoveAll(DIRECTORY) })(os.WriteFile(TAGS_FILE, []byte(""), 0644))
 
-	err = os.WriteFile(".memc/ignore", []byte(""), 0644)
-	if err != nil {
-		_ = os.RemoveAll(".memc")
-		fail("Error creating ignore file:", err)
-	}
-
+	// create ignore fire
+	failCleanupWhen("Error creating ignore file")(func() { _ = os.RemoveAll(DIRECTORY) })(os.WriteFile(IGNORE_FILE, []byte(""), 0644))
 }
 
+// Begin annotation process
+// opens an image viewer and an editor
 func doAnnotate() {
 	ensureInit()
-	tags := readTags()
-	ignore := readIgnore()
-	allFiles := candidateFiles()
-	untagged := filterAnnotated(allFiles, tags, ignore)
+
+	tags := openTags(TAGS_FILE)                         // these ones are already tagged files
+	ignore := openIgnore(IGNORE_FILE)                   // these ones are the files to ignore
+	allFiles := gatherCandidateFiles()                  // all the files that can be checked
+	untagged := filterAnnotated(allFiles, tags, ignore) // this way, we can get the untagged files
 
 	for _, file := range untagged {
 		// setup image viewer
-		display := exec.Command("feh", file)
+		display := exec.Command(DEFAULT_IMAGE_VIEWER, file)
 		displayError := make(chan error)
 		go func() {
 			err := display.Run()
 			displayError <- err
 		}()
 
+		const TMP = DIRECTORY + "/tmp"
+
 		// Clear file
-		os.WriteFile(".memc/tmp", []byte{}, 0644)
+		os.WriteFile(TMP, []byte{}, 0644)
 
 		// we should check here to avoid redundantly opening the editor while not operating on a real image
 
 		// open editor
 		editor := os.Getenv("EDITOR")
 		if editor == "" {
-			editor = "vi"
+			editor = DEFAULT_EDITOR
 		}
 
-		cmd := exec.Command(editor, ".memc/tmp")
+		cmd := exec.Command(editor, TMP)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 
-		if err := cmd.Run(); err != nil {
-			fail("Error when opening editor:", err)
-		}
+		failWhen("Error opening editor")(cmd.Run())
 
 		// read what the user has written
-		data, err := os.ReadFile(".memc/tmp")
-		if err != nil {
-			fail("Error when reading temporary file:", err)
-		}
+		data := failIf(os.ReadFile(TMP))("Error reading temporary file.")
 
-		_ = file
-
-		tag := strings.Fields(string(data))
+		tags := strings.Fields(string(data))
 
 		_ = display.Process.Kill() // should we ignore the error?
 
-		// I assume if the tag is left empty, it means that the user wants to stop tagging
-		if len(tag) == 0 {
+		// If the 'tags' is left empty, it means that the user wants to stop tagging
+		if len(tags) == 0 {
 			select {
 			case err := <-displayError:
 				fmt.Println("Display: ", err)
@@ -120,23 +115,22 @@ func doAnnotate() {
 			return
 		}
 
-		// append to tag file
-		tagFile, err := os.OpenFile(".memc/tags", os.O_APPEND|os.O_WRONLY, 0644)
-		if err != nil {
-			fail("Error opening tag file", err)
-		}
+		/* Add to tag file */
+		tagFile := failIf(os.OpenFile(TAGS_FILE, os.O_APPEND|os.O_WRONLY, 0644))("Error opening tag file")
 		defer tagFile.Close()
 
-		tagFile.WriteString(file + ": " + strings.Join(tag, " ") + "\n")
+		// Append to tag file (separate by strings)
+		failIf(tagFile.WriteString(file + ": " + strings.Join(tags, " ")))("Error writing to tags file")
 	}
 }
 
+/* Check "image repo" status. */
 func doStatus() {
 	ensureInit()
 
-	tags := readTags()
-	ignore := readIgnore()
-	allFiles := candidateFiles()
+	tags := openTags(TAGS_FILE)
+	ignore := openIgnore(IGNORE_FILE)
+	allFiles := gatherCandidateFiles()
 
 	untagged := filterAnnotated(allFiles, tags, ignore)
 
@@ -157,6 +151,7 @@ func doStatus() {
 		}
 	}
 
+	// Printing output
 	fmt.Printf(" %d / %d (%d ignored)\n", len(allFiles)-len(untagged)-numIgnored, len(allFiles)-numIgnored, numIgnored)
 
 	if numIgnoreTagOverlap > 0 {
@@ -166,12 +161,14 @@ func doStatus() {
 	fmt.Println(untagged)
 }
 
+// Find an image with a search query
 func doFind(searchTerms []string) {
 	ensureInit()
 
-	tags := readTags()
+	tags := openTags(TAGS_FILE)
 
 	// slow, O(n^3) implementation
+	// also, it works badly. I should find a simpler way to do it or at least a one that works better.
 	scores := []Candidate{}
 	for filename, description := range tags {
 		cumDistance := 0
@@ -188,104 +185,26 @@ func doFind(searchTerms []string) {
 		scores = append(scores, Candidate{filename, cumDistance})
 	}
 
-	// sort scores and return max 10 results
+	/* sort scores and return max 10 results */
 	sort.Slice(scores, func(i, j int) bool {
 		return scores[i].difference < scores[j].difference
 	})
 
-	trim := min(10, len(scores))
+	trimlen := min(10, len(scores))
 
-	for _, cand := range scores[:trim] {
+	for _, cand := range scores[:trimlen] {
 		fmt.Printf("%s: %d\n", cand.filename, cand.difference)
 	}
 }
 
+func doIgnore(files []string) {
+
+}
+
+/* Small util stuff */
 type Candidate struct {
 	filename   string
 	difference int
-}
-
-func filterAnnotated(candidates []string, tags map[string][]string, ignore Set) []string {
-	var untagged []string
-	for _, elem := range candidates {
-		_, isInTags := tags[elem]
-		_, isInIgnore := ignore[elem]
-		if !isInTags && !isInIgnore {
-			untagged = append(untagged, elem)
-		}
-	}
-
-	return untagged
-}
-
-func candidateFiles() []string {
-	// todo: according to docs, filepath.WalkDir passes the path with os-specific separators
-	// I'll have to check that on Windows
-	var allFiles []string
-	err := filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
-		if path == "." {
-			return nil
-		}
-
-		if strings.HasPrefix(d.Name(), ".") {
-			return fs.SkipDir
-		}
-
-		if d.IsDir() {
-			return nil
-		}
-
-		allFiles = append(allFiles, path)
-		return nil
-
-	})
-
-	if err != nil {
-		fail("Error walking current directory:", err)
-	}
-
-	return allFiles
-}
-
-func readTags() map[string][]string {
-	file, err := os.Open(".memc/tags")
-	if err != nil {
-		fail("Error while opening tag file for reading:", err)
-	}
-	defer file.Close()
-
-	allTags := make(map[string][]string)
-	scanner := bufio.NewScanner(file)
-
-	// apparently, there's a line limit equal to 64k characters per line, because Scanner does not allocate resources
-	for scanner.Scan() {
-		split := strings.Split(scanner.Text(), ":")
-		path, unfieldedTags := split[0], split[1]
-		tags := strings.Fields(unfieldedTags)
-		allTags[path] = tags
-	}
-
-	return allTags
-}
-
-type Set map[string]struct{}
-
-func readIgnore() Set {
-	file, err := os.Open(".memc/ignore")
-	if err != nil {
-		fail("Error while opening ignore file for reading:", err)
-	}
-	defer file.Close()
-
-	ignore := make(Set)
-	scanner := bufio.NewScanner(file)
-
-	for scanner.Scan() {
-		s := strings.TrimSpace(scanner.Text())
-		ignore[s] = struct{}{} // add a sentinel value
-	}
-
-	return ignore
 }
 
 func ensureInit() {
@@ -295,20 +214,16 @@ func ensureInit() {
 }
 
 func initialized() bool {
-	_, err := os.Stat(".memc")
+	_, err := os.Stat(DIRECTORY)
 
 	if os.IsNotExist(err) {
 		return false
 	}
 
+	// User might want to know about this, so we exit.
 	if err != nil {
 		fail("Error checking directory: ", err)
 	}
 
 	return true
-}
-
-func fail(err ...any) {
-	fmt.Println(err...)
-	os.Exit(1)
 }
