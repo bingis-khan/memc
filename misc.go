@@ -49,6 +49,7 @@ func gatherCandidateFiles() []string {
 	return allFiles
 }
 
+// Open the tags file.
 func openTags(tagfile string) Tags {
 	file := failIf(os.Open(tagfile))("Error while opening tag file for reading")
 	defer file.Close()
@@ -67,6 +68,8 @@ func openTags(tagfile string) Tags {
 	return allTags
 }
 
+// An ignore file is composed of lines.
+// In each line there is a path to a file or directory that should be ignored.
 func openIgnore(ignorefile string) Ignores {
 	file := failIf(os.Open(ignorefile))("Error while opening ignore file for reading")
 	defer file.Close()
@@ -76,8 +79,16 @@ func openIgnore(ignorefile string) Ignores {
 
 	for scanner.Scan() {
 		s := strings.TrimSpace(scanner.Text())
-		ignore[s] = struct{}{} // add a sentinel value
+		ignore[s] = struct{}{} // add a sentinel value - no sets in Go
 	}
 
 	return ignore
+}
+
+// Checks if a path is a subpath of another.
+// TODO: Actually implement it. Apparently it's not that straightforward in Go.
+//
+//	it's not exactly required, since I won't be abusing it anyway, so I'll leave it for later.
+func isSubpath(base, p string) bool {
+	return true
 }

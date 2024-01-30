@@ -10,6 +10,12 @@ import (
 	"github.com/agnivade/levenshtein"
 )
 
+/*
+	TODO: Recursively find the repository in parent paths.
+		Idea: make a struct which will contain the absolute paths after being found, then pass it around.
+		Should be returned by `ensureInit` or something.
+*/
+
 func main() {
 	if len(os.Args) < 2 {
 		fail("Must specify a command. Type 'help'.")
@@ -198,7 +204,42 @@ func doFind(searchTerms []string) {
 }
 
 func doIgnore(files []string) {
+	ensureInit()
 
+	ignores := openIgnore(IGNORE_FILE)
+	tags := openTags(TAGS_FILE)
+
+	ignoreFile := failIf(os.OpenFile(IGNORE_FILE, os.O_APPEND|os.O_WRONLY, 0644))("Error opening ignore file")
+	defer ignoreFile.Close()
+
+loop:
+	for _, filename := range files {
+		// check if it's a subpath to repository
+		if !isSubpath(".", filename) {
+			fmt.Printf("ERROR: %s is not in this repository.", filename)
+			continue
+		}
+
+		// check if it's ignored
+		for ign := range ignores {
+			if ign == filename {
+				fmt.Printf("WARNING: %s is already ignored.", filename)
+				continue loop
+			}
+		}
+
+		// check if it's already tagged
+		// file will still be added to "ignored"
+		for k := range tags {
+			if k == filename {
+				fmt.Printf("WARNING: %s is tagged. This will exclude it from search.", filename)
+				break
+			}
+		}
+
+		// Append to ignore file (separate by lines)
+		failIf(ignoreFile.WriteString(filename + "\n"))("Error writing to ignore file")
+	}
 }
 
 /* Small util stuff */
